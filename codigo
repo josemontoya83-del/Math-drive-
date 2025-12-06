@@ -1,0 +1,415 @@
+#include "raylib.h"
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+// FONDO Y PUNTUACION PARA TERMINAR JUEGO
+#define MAX_PARTICULAS 100
+#define META_PARA_GANAR 10
+
+// COLOR PARA LOGO EN MENU PRINCIPAL
+#define COLOR_PLATA CLITERAL(Color){220, 220, 220, 255}
+
+// ESTRUCTURAS
+typedef struct
+{
+	Vector2 position;
+	Vector2 speed;
+	float size;
+	Color color;
+} Particula;
+
+typedef struct
+{
+	float progreso;
+	bool activo;
+	float valorRealIzq;
+	float valorRealDer;
+	char textoIzq[20];
+	char textoDer[20];
+	int carrilCorrecto;
+	int tipoPregunta;
+} Desafio;
+
+typedef enum
+{
+	PANTALLA_INICIO,
+	PANTALLA_SELECCION_MODO,
+	PANTALLA_JUEGO,
+	PANTALLA_GAMEOVER,
+	PANTALLA_VICTORIA
+} GameScreen;
+
+// FUNCION PARA QUITAR EL FONDO DE LA IMAGEN VAGON PARA EL JUEGO
+
+void QuitarFondo(Image *imagen)
+{
+
+	ImageFormat(imagen, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+	Color *pixels = (Color *)imagen->data;
+
+	Color colorRef = pixels[0];
+	int totalPixels = imagen->width * imagen->height;
+
+	for (int i = 0; i < totalPixels; i++)
+	{
+		if (abs(pixels[i].r - colorRef.r) < 50 &&
+			abs(pixels[i].g - colorRef.g) < 50 &&
+			abs(pixels[i].b - colorRef.b) < 50)
+		{
+
+			pixels[i] = BLANK; // HACER INVISIBLE EL PIXEL DE LA ESQUINA
+		}
+	}
+}
+
+// GENERADOR PARA LAS MATEMATICAS EN JUEGO
+void GenerarPregunta(Desafio *d, int dificultad)
+{
+	d->progreso = 0.0f;
+	d->activo = true;
+	d->tipoPregunta = GetRandomValue(0, 1);
+
+	int tipoNumero = GetRandomValue(0, 2);
+	int max = (dificultad == 0) ? 10 : 20;
+
+	if (tipoNumero == 0)
+	{ // ENTEROS
+		int a = GetRandomValue(1, max * 5);
+		int b = GetRandomValue(1, max * 5);
+		while (a == b)
+			b = GetRandomValue(1, max * 5);
+		d->valorRealIzq = (float)a;
+		d->valorRealDer = (float)b;
+		sprintf(d->textoIzq, "%d", a);
+		sprintf(d->textoDer, "%d", b);
+	}
+	else if (tipoNumero == 1)
+	{ // FRACCIONES
+		int numA = GetRandomValue(1, max);
+		int denA = GetRandomValue(2, 5);
+		int numB = GetRandomValue(1, max);
+		int denB = GetRandomValue(2, 5);
+		d->valorRealIzq = (float)numA / (float)denA;
+		d->valorRealDer = (float)numB / (float)denB;
+		while (fabs(d->valorRealIzq - d->valorRealDer) < 0.01f)
+		{
+			numB = GetRandomValue(1, max);
+			d->valorRealDer = (float)numB / (float)denB;
+		}
+		sprintf(d->textoIzq, "%d/%d", numA, denA);
+		sprintf(d->textoDer, "%d/%d", numB, denB);
+	}
+	else
+	{ // DECIMALES
+		float a = GetRandomValue(0, max) + (GetRandomValue(1, 9) / 10.0f);
+		float b = GetRandomValue(0, max) + (GetRandomValue(1, 9) / 10.0f);
+		while (fabs(a - b) < 0.01f)
+			b = GetRandomValue(0, max) + (GetRandomValue(1, 9) / 10.0f);
+		d->valorRealIzq = a;
+		d->valorRealDer = b;
+		sprintf(d->textoIzq, "%.1f", a);
+		sprintf(d->textoDer, "%.1f", b);
+	}
+
+	if (d->tipoPregunta == 0)
+		d->carrilCorrecto = (d->valorRealIzq > d->valorRealDer) ? 0 : 1;
+	else
+		d->carrilCorrecto = (d->valorRealIzq < d->valorRealDer) ? 0 : 1;
+}
+
+// BOTONES DE INTERFAZ
+void DibujarBoton(Rectangle rec, const char *texto, Color colorBorde, bool hover)
+{
+	DrawRectangleRec(rec, Fade(BLACK, 0.8f));
+	DrawRectangleLinesEx(rec, hover ? 4 : 2, hover ? WHITE : colorBorde);
+	int ancho = MeasureText(texto, 20);
+	DrawText(texto, rec.x + (rec.width - ancho) / 2, rec.y + (rec.height - 20) / 2, 20, WHITE);
+}
+
+int main(void)
+{
+	const int screenWidth = 800;
+	const int screenHeight = 800;
+
+	InitWindow(screenWidth, screenHeight, "Math Drive - Final");
+	// ... InitWindow ...
+    InitAudioDevice(); 
+
+    // 1. CARGAMOS LAS DOS CANCIONES
+    Music musMenu = LoadMusicStream("menu.mp3");
+    Music musJuego = LoadMusicStream("juego.mp3");
+    
+    // 2. AJUSTAMOS VOLUMEN
+    SetMusicVolume(musMenu, 0.5f);
+    SetMusicVolume(musJuego, 0.4f); // Quizás la del juego un poco más bajita para concentrarse
+
+    // 3. ARRANCAMOS LA DEL MENU INMEDIATAMENTE
+    PlayMusicStream(musMenu);
+
+	// CARGA DE RECURSOS
+	Texture2D texFondo = LoadTexture("doble_vagon.png");
+
+	// CARGA Y LIMPIEZA SEGURA DEL VAGON
+	Image imVagon = LoadImage("vagon.png");
+	if (imVagon.data != NULL)
+	{
+		QuitarFondo(&imVagon);
+	}
+	Texture2D texVagon = LoadTextureFromImage(imVagon);
+	UnloadImage(imVagon);
+
+	// PARTICULAS
+	Particula polvo[MAX_PARTICULAS];
+	Vector2 centro = {400.0f, 400.0f};
+	for (int i = 0; i < MAX_PARTICULAS; i++)
+	{
+		polvo[i].position = centro;
+		polvo[i].size = GetRandomValue(1, 3);
+		polvo[i].speed = (Vector2){GetRandomValue(-2, 2), GetRandomValue(-2, 2)};
+		polvo[i].color = Fade(SKYBLUE, 0.5f);
+	}
+
+	// VARIABLES DE JUEGO
+	int carril = 0;
+	float posXJugador = 400.0f;
+	float velocidad = 0.005f;
+	int vidas = 3;
+	int score = 0;
+	int dificultad = 0;
+
+	Desafio desafio = {0};
+	float feedbackTimer = 0.0f;
+	Color feedbackColor = BLANK;
+
+	Rectangle btnJugar = {250, 480, 300, 60};
+	Rectangle btnSalir = {250, 560, 300, 60};
+	bool sonidoEncendido = true; 
+    Rectangle btnMute = { 620, 20, 160, 40 }; // Botón en la esquina superior derecha
+    SetTargetFPS(60);
+	Rectangle zonaNorm = {50, 300, 320, 200};
+	Rectangle zonaComp = {430, 300, 320, 200};
+
+	GameScreen pantalla = PANTALLA_INICIO;
+	bool salir = false;
+
+	SetTargetFPS(60);
+
+	while (!WindowShouldClose() && !salir)
+	{
+		// ACTUALIZAMOS LA MUSICA
+		UpdateMusicStream(musMenu);
+		UpdateMusicStream(musJuego);
+		Vector2 mouse = GetMousePosition();
+		if (CheckCollisionPointRec(mouse, btnMute) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON))
+        {
+            sonidoEncendido = !sonidoEncendido; // Cambiamos de True a False (o viceversa)
+            
+            if (sonidoEncendido) SetMasterVolume(1.0f); // Volumen al 100%
+            else SetMasterVolume(0.0f);                 // Volumen al 0% (Mute)
+        }
+
+		for (int i = 0; i < MAX_PARTICULAS; i++)
+		{
+			polvo[i].position.x += polvo[i].speed.x;
+			polvo[i].position.y += polvo[i].speed.y;
+			polvo[i].speed.x *= 1.03f;
+			polvo[i].speed.y *= 1.03f;
+			if (polvo[i].position.x < 0 || polvo[i].position.x > 800 || polvo[i].position.y < 0 || polvo[i].position.y > 800)
+			{
+				polvo[i].position = centro;
+				float ang = GetRandomValue(0, 360) * DEG2RAD;
+				float v = GetRandomValue(1, 2);
+				polvo[i].speed = (Vector2){cosf(ang) * v, sinf(ang) * v};
+			}
+		}
+
+		switch (pantalla)
+		{
+		case PANTALLA_INICIO:
+			if (CheckCollisionPointRec(mouse, btnJugar) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON))
+				pantalla = PANTALLA_SELECCION_MODO;
+			if (CheckCollisionPointRec(mouse, btnSalir) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON))
+				salir = true;
+			break;
+		case PANTALLA_SELECCION_MODO:
+			if (CheckCollisionPointRec(mouse, zonaNorm) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON))
+			{
+				dificultad = 0;
+				velocidad = 0.005f;
+				StopMusicStream(musMenu);
+				PlayMusicStream(musJuego);
+				pantalla = PANTALLA_JUEGO;
+				vidas = 3;
+				score = 0;
+				desafio.activo = false;
+				posXJugador = 400;
+			}
+			if (CheckCollisionPointRec(mouse, zonaComp) && IsMouseButtonReleased(MOUSE_LEFT_BUTTON))
+			{
+				dificultad = 1;
+				velocidad = 0.015f;
+				StopMusicStream(musMenu);
+				PlayMusicStream(musJuego);
+				pantalla = PANTALLA_JUEGO;
+				vidas = 3;
+				score = 0;
+				desafio.activo = false;
+				posXJugador = 400;
+			}
+			break;
+		case PANTALLA_JUEGO:
+			if (IsKeyPressed(KEY_LEFT) || IsKeyPressed(KEY_A))
+				carril = 0;
+			if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D))
+				carril = 1;
+
+			//Definimos las posiciones exactas de los dos rieles del tren
+			float metaX = (carril == 0) ? 230.0f : 570.0f;
+			posXJugador = metaX;
+
+			if (!desafio.activo)
+			{
+				GenerarPregunta(&desafio, dificultad);
+			}
+			else
+			{
+				desafio.progreso += velocidad;
+				if (desafio.progreso > 0.85f && desafio.progreso < 0.95f)
+				{
+					if (carril == desafio.carrilCorrecto)
+					{
+						score++;
+						float incremento = (dificultad == 0) ? 0.0005f : 0.001f;
+						velocidad += incremento;
+						feedbackColor = GREEN;
+						feedbackTimer = 15;
+						desafio.activo = false;
+						if (score >= META_PARA_GANAR)
+							pantalla = PANTALLA_VICTORIA;
+					}
+					else
+					{
+						vidas--;
+						feedbackColor = RED;
+						feedbackTimer = 20;
+						desafio.activo = false;
+						if (dificultad == 0 && velocidad > 0.005f)
+							velocidad -= 0.001f;
+						if (vidas <= 0)
+							pantalla = PANTALLA_GAMEOVER;
+					}
+				}
+				if (desafio.progreso >= 1.0f)
+					desafio.activo = false;
+			}
+			if (feedbackTimer > 0)
+				feedbackTimer--;
+			break;
+		case PANTALLA_GAMEOVER:
+		case PANTALLA_VICTORIA:
+			if (IsKeyPressed(KEY_ENTER))
+				pantalla = PANTALLA_INICIO;
+			break;
+		}
+
+		BeginDrawing();
+		ClearBackground(BLACK);
+		DrawTexturePro(texFondo, (Rectangle){0, 0, texFondo.width, texFondo.height}, (Rectangle){0, 0, 800, 800}, (Vector2){0, 0}, 0.0f, WHITE);
+		for (int i = 0; i < MAX_PARTICULAS; i++)
+			DrawCircleV(polvo[i].position, polvo[i].size, polvo[i].color);
+
+		switch (pantalla)
+		{
+		case PANTALLA_INICIO:
+		{
+			DrawText("MATH DRIVE", 225, 100, 60, COLOR_PLATA);
+			DibujarBoton(btnJugar, "JUGAR", LIME, CheckCollisionPointRec(mouse, btnJugar));
+			DibujarBoton(btnSalir, "SALIR", RED, CheckCollisionPointRec(mouse, btnSalir));
+			DrawRectangle(200, 650, 400, 100, Fade(BLACK, 0.7f));
+            DrawRectangleLines(200, 650, 400, 100, DARKGRAY); // Un borde elegante
+
+            // 2. Título del tutorial
+            DrawText("CONTROLES:", 340, 660, 20, YELLOW);
+
+            // 3. Instrucciones (Izquierda y Derecha)
+            DrawText("A o <   : Mover Izquierda", 240, 690, 20, WHITE);
+            DrawText("D o >   : Mover Derecha",   240, 715, 20, WHITE);
+		}
+		break;
+
+		case PANTALLA_SELECCION_MODO:
+			DrawText("MODO DE JUEGO", 280, 80, 40, WHITE);
+			DibujarBoton(zonaNorm, "NORMAL", LIGHTGRAY, CheckCollisionPointRec(mouse, zonaNorm));
+			DibujarBoton(zonaComp, "ADRENALINA", RED, CheckCollisionPointRec(mouse, zonaComp));
+			DrawText("Velocidad progresiva", 120, 420, 20, GRAY);
+			DrawText("Velocidad EXTREMA", 520, 420, 20, RED);
+			break;
+
+		case PANTALLA_JUEGO:
+		{
+			DrawRectangle(0, 0, 800, 90, Fade(BLACK, 0.8f));
+			const char *txtPreg = (desafio.tipoPregunta == 0) ? "¿CUAL ES MAYOR?" : "¿CUAL ES MENOR?";
+			Color colorPreg = (desafio.tipoPregunta == 0) ? GOLD : SKYBLUE;
+			DrawText(txtPreg, 280, 30, 30, colorPreg);
+
+			if (desafio.activo)
+			{
+				float p = desafio.progreso;
+				float scale = 0.1f + p * 1.5f;
+				float y = 350 + (900 - 350) * p;
+				float xL = 400 + (230 - 400) * p;
+				float xR = 400 + (570 - 400) * p;
+				float sz = 200 * scale;
+				Rectangle rL = {xL - sz / 2, y - sz / 2, sz, sz};
+				DrawRectangleRec(rL, Fade(BLACK, 0.9f));
+				DrawRectangleLinesEx(rL, 3 * scale, BLUE);
+				DrawText(desafio.textoIzq, xL - MeasureText(desafio.textoIzq, 40 * scale) / 2, y - 20 * scale, 40 * scale, WHITE);
+				Rectangle rR = {xR - sz / 2, y - sz / 2, sz, sz};
+				DrawRectangleRec(rR, Fade(BLACK, 0.9f));
+				DrawRectangleLinesEx(rR, 3 * scale, ORANGE);
+				DrawText(desafio.textoDer, xR - MeasureText(desafio.textoDer, 40 * scale) / 2, y - 20 * scale, 40 * scale, WHITE);
+			}
+
+			// Vagón Jugador (Escala reducida a 0.25 para que no tape)
+			float esc = 0.25f;
+			Rectangle destV = {posXJugador - (texVagon.width * esc) / 2, 620, texVagon.width * esc, texVagon.height * esc};
+			DrawTexturePro(texVagon, (Rectangle){0, 0, texVagon.width, texVagon.height}, destV, (Vector2){0, 0}, 0.0f, WHITE);
+
+			DrawText(TextFormat("VIDAS: %d", vidas), 20, 110, 20, RED);
+			DrawText(TextFormat("META: %d/%d", score, META_PARA_GANAR), 20, 140, 20, GREEN);
+			if (feedbackTimer > 0)
+				DrawRectangle(0, 0, 800, 800, Fade(feedbackColor, 0.3f));
+		}
+		break;
+
+		case PANTALLA_GAMEOVER:
+			DrawRectangle(0, 0, 800, 800, Fade(RED, 0.2f));
+			DrawText("GAME OVER", 240, 350, 60, RED);
+			DrawText("ENTER para volver", 300, 450, 20, GRAY);
+			break;
+
+		case PANTALLA_VICTORIA:
+			DrawRectangle(0, 0, 800, 800, Fade(GREEN, 0.2f));
+			DrawText("¡GANASTE!", 260, 350, 60, GOLD);
+			DrawText("ENTER para volver", 300, 450, 20, GRAY);
+			break;
+		}
+
+		const char* txtSonido = sonidoEncendido ? "SONIDO: ON" : "SILENCIO";
+        Color colorSonido = sonidoEncendido ? GREEN : GRAY;
+        
+        DibujarBoton(btnMute, txtSonido, colorSonido, CheckCollisionPointRec(mouse, btnMute));
+
+		EndDrawing();
+	}
+
+	UnloadMusicStream(musMenu);
+    UnloadMusicStream(musJuego);
+    CloseAudioDevice();
+	UnloadTexture(texFondo);
+	UnloadTexture(texVagon);
+	CloseWindow();
+	return 0;
+}
